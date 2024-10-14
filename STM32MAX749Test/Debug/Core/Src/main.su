@@ -1,0 +1,10 @@
+../Core/Src/main.c:69:10:Read_ADC_Value	8	static
+../Core/Src/main.c:83:6:Set_DAC_Output	16	static
+../Core/Src/main.c:105:5:main	104	static
+../Core/Src/main.c:173:6:SystemClock_Config	128	static
+../Core/Src/main.c:224:13:MX_ADC1_Init	48	static
+../Core/Src/main.c:290:13:MX_DAC_Init	24	static
+../Core/Src/main.c:330:13:MX_I2C1_Init	8	static
+../Core/Src/main.c:378:13:MX_SPI1_Init	8	static
+../Core/Src/main.c:418:13:MX_GPIO_Init	48	static
+../Core/Src/main.c:473:6:Error_Handler	4	static,ignoring_inline_asm

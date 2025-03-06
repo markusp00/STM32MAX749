@@ -24,6 +24,9 @@
 /* USER CODE BEGIN Includes */
 #include "usbd_cdc_if.h"
 #include "string.h"
+#include "stdio.h"
+#include "stts22h.h"
+#include "stts22h_reg.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,6 +37,21 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define USE_USB
+#define NUCLEO_F401RE
+
+#define NOMINAL_TEMPERATURE 25
+#define TEMPERATURE_COEFICCIENT 0.034
+
+// STTS22H
+#if defined(NUCLEO_F401RE)
+/* NUCLEO_F401RE: Define communication interface */
+#define SENSOR_BUS hi2c2
+
+#elif defined(SPC584B_DIS)
+/* DISCOVERY_SPC584B: Define communication interface */
+#define SENSOR_BUS I2CD1
+
+#endif
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,6 +65,9 @@ ADC_HandleTypeDef hadc1;
 DAC_HandleTypeDef hdac;
 
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c2;
+
+OPAMP_HandleTypeDef hopamp1;
 
 SPI_HandleTypeDef hspi1;
 
@@ -54,7 +75,16 @@ SPI_HandleTypeDef hspi1;
 uint8_t rxBuf[64];
 uint32_t ADC_val = 0;
 uint32_t DAC_val = 0;
+float DAC_voltage = 0;
 float measured_voltage = 0;
+float voltage_setpoint = -40.7;
+float nominal_voltage = -40.7;
+
+// STTS22H
+static int16_t data_raw_temperature;
+static float_t temperature_degC;
+static uint8_t whoamI;
+static uint8_t tx_buffer[1000];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,7 +94,20 @@ static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_DAC_Init(void);
+static void MX_OPAMP1_Init(void);
+static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
+
+// STTS22H
+static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
+                              uint16_t len);
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
+                             uint16_t len);
+static void tx_com( uint8_t *tx_buffer, uint16_t len );
+static void platform_delay(uint32_t ms);
+static void platform_init(void);
+
+
 // Function to read ADC value from channel IN2 (PA1)
 uint32_t Read_ADC_Value(void)
 {
@@ -132,10 +175,44 @@ int main(void)
   MX_ADC1_Init();
   MX_DAC_Init();
   MX_USB_DEVICE_Init();
+  MX_OPAMP1_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
   // Buffer for USB_COM
   char txBuf[64];
-  uint16_t temp_num = 0;
+
+  /* Initialize mems driver interface */
+  stmdev_ctx_t dev_ctx;
+  dev_ctx.write_reg = platform_write;
+  dev_ctx.read_reg = platform_read;
+  dev_ctx.mdelay = platform_delay;
+  dev_ctx.handle = &SENSOR_BUS;
+
+  /* Init test platform */
+  platform_init();
+
+  /* Check device ID */
+  stts22h_dev_id_get(&dev_ctx, &whoamI);
+
+  while(1)
+  {
+	  stts22h_dev_id_get(&dev_ctx, &whoamI);
+	  if (whoamI == STTS22H_ID) break;
+  }
+  /*
+   * Set Output Data Rate
+   * WARNING: this function can reset the device configuration.
+   */
+//  stts22h_temp_data_rate_set(&dev_ctx, STTS22H_1Hz);
+
+  /* Enable interrupt on high(=49.5 degC)/low(=2.5 degC) temperature. */
+  //float_t temperature_high_limit = 49.5f;
+  //stts22h_temp_trshld_high_set(&dev_ctx, (int8_t)(temperature_high_limit / 0.64f) + 64 );
+
+  //float_t temperature_low_limit = 2.5f;
+  //stts22h_temp_trshld_low_set(&dev_ctx, (int8_t)(temperature_low_limit / 0.64f) + 64 );
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -145,23 +222,45 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	HAL_Delay(1000);
+	uint8_t flag;
+	stts22h_temp_flag_data_ready_get(&dev_ctx, &flag);
 
-	if(rxBuf[0] == 117) (DAC_val = DAC_val + 1);
-	else if(rxBuf[0] == 100) (DAC_val = DAC_val - 1);
+	if (flag)
+	{
+	  /* Read temperature data */
+	  memset(&data_raw_temperature, 0, sizeof(int16_t));
+	  stts22h_temperature_raw_get(&dev_ctx, &data_raw_temperature);
+	  temperature_degC = stts22h_from_lsb_to_celsius(data_raw_temperature);
+	  snprintf(tx_buffer, sizeof(tx_buffer), "Measured temperature: %0.3f C\r\n", temperature_degC);
+	  CDC_Transmit_FS((uint8_t *) tx_buffer, strlen(tx_buffer));
+	}
+
+
+//	if(rxBuf[0] == 117) (DAC_val = DAC_val + 1);
+//	else if(rxBuf[0] == 100) (DAC_val = DAC_val - 1);
+	ADC_val = Read_ADC_Value();
+	measured_voltage = ((float)ADC_val / 4095) * 3.3;
+	voltage_setpoint = nominal_voltage - (temperature_degC - NOMINAL_TEMPERATURE)*TEMPERATURE_COEFICCIENT;
+
+	if (measured_voltage < voltage_setpoint)
+	{
+		DAC_val++;
+	}
+	else
+	{
+		DAC_val--;
+	}
 
 	if(DAC_val > 4095) DAC_val = 4095;
 	else if (DAC_val < 0) DAC_val = 0;
 
-	HAL_Delay(10);
-	ADC_val = Read_ADC_Value();
-	measured_voltage = ((float)ADC_val / 4095) * 3.3;
-	temp_num = temp_num + 1;
+	DAC_voltage = ((float)DAC_val/4095)*3.3;
+
 	Set_DAC_Output(DAC_val);
 	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_8);
-//	  snprintf(txBuf, sizeof(txBuf), "Number: %d \r\n", temp_num);
-//	  CDC_Transmit_FS((uint8_t *) txBuf, strlen(txBuf));
-	  snprintf(txBuf, sizeof(txBuf), "DAC_val: %ld \t ADC value: %ld \t Measured voltage: %f \r\n", DAC_val, ADC_val, measured_voltage);
-	  CDC_Transmit_FS((uint8_t *) txBuf, strlen(txBuf));
+	snprintf(txBuf, sizeof(txBuf), "DAC: %0.3f V\t ADC value: %ld \t Measured voltage: %0.3f \r\n", DAC_voltage, ADC_val, measured_voltage);
+	CDC_Transmit_FS((uint8_t *) txBuf, strlen(txBuf));
   }
   /* USER CODE END 3 */
 }
@@ -206,9 +305,10 @@ void SystemClock_Config(void)
     Error_Handler();
   }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_I2C1
-                              |RCC_PERIPHCLK_ADC12;
+                              |RCC_PERIPHCLK_I2C2|RCC_PERIPHCLK_ADC12;
   PeriphClkInit.Adc12ClockSelection = RCC_ADC12PLLCLK_DIV1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+  PeriphClkInit.I2c2ClockSelection = RCC_I2C2CLKSOURCE_HSI;
   PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
@@ -338,7 +438,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x2000090E;
+  hi2c1.Init.Timing = 0x0010020A;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -367,6 +467,84 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x00201D2B;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
+
+}
+
+/**
+  * @brief OPAMP1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_OPAMP1_Init(void)
+{
+
+  /* USER CODE BEGIN OPAMP1_Init 0 */
+
+  /* USER CODE END OPAMP1_Init 0 */
+
+  /* USER CODE BEGIN OPAMP1_Init 1 */
+
+  /* USER CODE END OPAMP1_Init 1 */
+  hopamp1.Instance = OPAMP1;
+  hopamp1.Init.Mode = OPAMP_FOLLOWER_MODE;
+  hopamp1.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO2;
+  hopamp1.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
+  hopamp1.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  if (HAL_OPAMP_Init(&hopamp1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN OPAMP1_Init 2 */
+
+  /* USER CODE END OPAMP1_Init 2 */
 
 }
 
@@ -463,7 +641,79 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/*
+ * @brief  Write generic device register (platform dependent)
+ *
+ * @param  handle    customizable argument. In this examples is used in
+ *                   order to select the correct sensor bus handler.
+ * @param  reg       register to write
+ * @param  bufp      pointer to data to write in register reg
+ * @param  len       number of consecutive register to write
+ *
+ */
+static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
+                              uint16_t len)
+{
+#if defined(NUCLEO_F401RE)
+  HAL_I2C_Mem_Write(handle, STTS22H_I2C_ADD_L, reg,
+                    I2C_MEMADD_SIZE_8BIT, (uint8_t*) bufp, len, 1000);
+#elif defined(SPC584B_DIS)
+  i2c_lld_write(handle,  STTS22H_I2C_ADD_L & 0xFE, reg, (uint8_t*) bufp, len);
+#endif
+  return 0;
+}
 
+/*
+ * @brief  Read generic device register (platform dependent)
+ *
+ * @param  handle    customizable argument. In this examples is used in
+ *                   order to select the correct sensor bus handler.
+ * @param  reg       register to read
+ * @param  bufp      pointer to buffer that store the data read
+ * @param  len       number of consecutive register to read
+ *
+ */
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
+                             uint16_t len)
+{
+#if defined(NUCLEO_F401RE)
+  HAL_I2C_Mem_Read(handle, STTS22H_I2C_ADD_L, reg,
+                   I2C_MEMADD_SIZE_8BIT, bufp, len, 1000);
+#elif defined(SPC584B_DIS)
+  i2c_lld_read(handle, STTS22H_I2C_ADD_L & 0xFE, reg, bufp, len);
+#endif
+  return 0;
+}
+
+
+/*
+ * @brief  platform specific delay (platform dependent)
+ *
+ * @param  ms        delay in ms
+ *
+ */
+static void platform_delay(uint32_t ms)
+{
+#if defined(NUCLEO_F401RE)
+  HAL_Delay(ms);
+#elif defined(SPC584B_DIS)
+  osalThreadDelayMilliseconds(ms);
+#endif
+}
+
+/*
+ * @brief  platform specific initialization (platform dependent)
+ */
+static void platform_init(void)
+{
+#if defined(STEVAL_MKI109V3)
+  TIM3->CCR1 = PWM_3V3;
+  TIM3->CCR2 = PWM_3V3;
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  HAL_Delay(1000);
+#endif
+}
 /* USER CODE END 4 */
 
 /**

@@ -64,8 +64,8 @@ all: main-build
 main-build: STM32MAX749Test.elf secondary-outputs
 
 # Tool invocations
-STM32MAX749Test.elf STM32MAX749Test.map: $(OBJS) $(USER_OBJS) C:\Users\marku\STM32CubeIDE\workspace_1.16.1\STM32MAX749Test\STM32F303VCTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "STM32MAX749Test.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\marku\STM32CubeIDE\workspace_1.16.1\STM32MAX749Test\STM32F303VCTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="STM32MAX749Test.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
+STM32MAX749Test.elf STM32MAX749Test.map: $(OBJS) $(USER_OBJS) C:\Users\marku\STM32CubeIDE\workspace_1.16.1\STM32MAX749\STM32MAX749Test\STM32F303VCTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "STM32MAX749Test.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\marku\STM32CubeIDE\workspace_1.16.1\STM32MAX749\STM32MAX749Test\STM32F303VCTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="STM32MAX749Test.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
